@@ -1,0 +1,11 @@
+{
+  "region": "eu-central-2",
+  "architecture": "arm64",
+  "runtimes": ["java-jvm", "java-native", "node"],
+  "memorySizes": [512, 1024, 1769],
+  "payloadSizes": ["1k", "100k", "1m"],
+  "iterationsPerConfig": 50,
+  "warmupInvocations": 2,
+  "functionNamePattern": "bench-{runtime}-{memory}",
+  "tableName": "BenchTable"
+}
