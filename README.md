@@ -1,9 +1,9 @@
 # Lambda Cold Start Benchmark
 
 Vergleichsstudie Cold-Start-Latenz auf AWS Lambda fuer drei Runtimes:
-- Quarkus 3.x auf JVM (Lambda runtime `java21`)
+- Quarkus 3.x auf JVM (Lambda runtime `java25`)
 - Quarkus 3.x Native via GraalVM (Lambda runtime `provided.al2023`)
-- Node.js 22 (Lambda runtime `nodejs22.x`)
+- Node.js 24 (Lambda runtime `nodejs24.x`)
 
 Identische Workload-Logik in allen Runtimes, definiert in [`workload/contract.md`](workload/contract.md).
 
@@ -38,7 +38,7 @@ cd runtimes/java
 ```
 
 Lambda-Konfiguration:
-- Runtime: `java21`
+- Runtime: `java25`
 - Handler: `io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest`
 - Memory: 512 / 1024 / 1769 MB
 
@@ -59,17 +59,17 @@ Lambda-Konfiguration:
 
 Hinweis: Native-Build im Container braucht laufenden Docker- oder Podman-Daemon.
 
-### Node.js 22
+### Node.js 24
 
 ```bash
 cd runtimes/node
 zip -r ../../build/node.zip src/handler.mjs package.json
 ```
 
-`@aws-sdk/client-dynamodb` ist in der Lambda Node 22 Runtime bereits enthalten und wird **nicht** mit ins Zip gepackt. Lokal nur als devDependency fuer IDE-Support.
+`@aws-sdk/client-dynamodb` ist in der Lambda Node 24 Runtime bereits enthalten und wird **nicht** mit ins Zip gepackt. Lokal nur als devDependency fuer IDE-Support.
 
 Lambda-Konfiguration:
-- Runtime: `nodejs22.x`
+- Runtime: `nodejs24.x`
 - Handler: `src/handler.handler`
 - Memory: 512 / 1024 / 1769 MB
 
