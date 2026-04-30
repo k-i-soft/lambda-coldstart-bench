@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 # SnapStart Bench Runner
 #
-# Variante zu run.sh fuer SnapStart-Functions. Cold-Start-Forcierung geht
-# ueber Version-Publish + Alias-Update, weil update-function-configuration
-# bei aliasiertem Snapshot keinen Restore ausloest.
-#
+# Misst Restore Duration aus dem REPORT-Feld der SnapStart-Functions.
 # Pro Iteration:
-#   1. Env-Var BENCH_RUN=<nonce> auf $LATEST setzen
-#   2. publish-version             -> erzeugt Snapshot, dauert ~10-30 s
-#   3. wait function-active-v2     -> blockt bis State=Active
-#   4. update-alias live -> N      -> Alias zeigt auf neue Version
-#   5. invoke <fn>:live            -> Cold Restore aus dem neuen Snapshot
+#   1. Description-Bump auf $LATEST           -> erzwingt neuen RevisionId
+#   2. publish-version                        -> erzeugt neuen Snapshot, ~10-30 s
+#   3. Polling auf State=Active               -> wartet bis Snapshot bereit
+#   4. update-alias live -> N                 -> Alias zeigt auf neue Version
+#   5. invoke <fn>:live                       -> Restore aus dem neuen Snapshot
+#
+# Hinweis: AWS bietet keinen schnellen Mechanismus um warme Instanzen einer
+# aliasierten Version zu evicten. Concurrency-0-Trick wirkt erst nach
+# Minuten, update-function-configuration aendert nur $LATEST. Also
+# publishen wir pro Iteration neu. Snapshots altern nicht, die Restore
+# Duration ist fuer Messzwecke aequivalent zu einem reused-Snapshot.
 #
 # Parser akzeptiert "Restore Duration:" zusaetzlich zu "Init Duration:" und
-# schreibt beides in dieselbe init_duration_ms-Spalte. analyze.py braucht
-# keine Aenderung.
+# schreibt beides in dieselbe init_duration_ms-Spalte.
 #
 # Usage:
 #   ./run-snapstart.sh [config.json] [out.csv]
@@ -28,13 +30,13 @@ CONFIG_FILE="${1:-$SCRIPT_DIR/config.json}"
 OUTPUT_FILE="${2:-$PROJECT_ROOT/results/raw/measurements-snapstart-$(date -u +%Y%m%dT%H%M%SZ).csv}"
 DRY_RUN="${DRY_RUN:-0}"
 
-# SnapStart-spezifische Konstanten
 RUNTIME_KEY="java-jvm-snapstart"
 ALIAS_NAME="live"
 ITER="${SNAPSTART_ITER:-25}"
 WARMUP="${SNAPSTART_WARMUP:-2}"
 FN_PATTERN="bench-java-jvm-snapstart-{memory}"
 SNAPSHOT_TIMEOUT_SEC="${SNAPSHOT_TIMEOUT_SEC:-90}"
+CLEANUP_INTERVAL="${CLEANUP_INTERVAL:-5}"
 
 for cmd in jq aws python3 base64; do
   command -v "$cmd" >/dev/null 2>&1 || { echo "ERROR: $cmd nicht gefunden" >&2; exit 1; }
@@ -54,18 +56,20 @@ fn_name() {
   echo "${n//\{memory\}/$memory}"
 }
 
+# Erzwingt einen frischen Restore: bumpt Description auf $LATEST, publisht eine
+# neue Version (mit eigenem Snapshot), wartet bis State=Active, legt Alias um.
+# Echo der neuen Versionsnummer auf stdout, Diagnostik auf stderr.
 publish_and_wait() {
   local fn=$1
-  local nonce="$RANDOM$(date +%s%N)"
   if [[ "$DRY_RUN" == "1" ]]; then
-    echo "DRY-VERSION-$nonce"
+    echo "DRY-V-$RANDOM"
     return
   fi
 
   aws lambda update-function-configuration \
     --region "$REGION" \
     --function-name "$fn" \
-    --environment "Variables={BENCH_TABLE=$TABLE,BENCH_RUNTIME=$RUNTIME_KEY,BENCH_RUN=$nonce}" \
+    --description "iter-$(date +%s%N)" \
     --output json >/dev/null
   aws lambda wait function-updated \
     --region "$REGION" \
@@ -80,14 +84,20 @@ publish_and_wait() {
 
   local elapsed=0
   while (( elapsed < SNAPSHOT_TIMEOUT_SEC )); do
-    local state
+    local state opt_status
     state=$(aws lambda get-function-configuration \
       --region "$REGION" \
       --function-name "$fn" \
       --qualifier "$version" \
       --query State \
       --output text 2>/dev/null || echo "Pending")
-    if [[ "$state" == "Active" ]]; then
+    opt_status=$(aws lambda get-function-configuration \
+      --region "$REGION" \
+      --function-name "$fn" \
+      --qualifier "$version" \
+      --query 'SnapStart.OptimizationStatus' \
+      --output text 2>/dev/null || echo "Off")
+    if [[ "$state" == "Active" && "$opt_status" == "On" ]]; then
       echo "$version"
       return 0
     fi
@@ -98,7 +108,7 @@ publish_and_wait() {
     sleep 2
     elapsed=$((elapsed + 2))
   done
-  echo "ERROR: Snapshot-Timeout fuer $fn:$version" >&2
+  echo "ERROR: Snapshot-Timeout fuer $fn:$version (state=$state, snap=$opt_status)" >&2
   return 1
 }
 
@@ -107,19 +117,11 @@ update_alias() {
   if [[ "$DRY_RUN" == "1" ]]; then
     return
   fi
-  if aws lambda get-alias --region "$REGION" --function-name "$fn" --name "$ALIAS_NAME" >/dev/null 2>&1; then
-    aws lambda update-alias \
-      --region "$REGION" \
-      --function-name "$fn" \
-      --name "$ALIAS_NAME" \
-      --function-version "$version" >/dev/null
-  else
-    aws lambda create-alias \
-      --region "$REGION" \
-      --function-name "$fn" \
-      --name "$ALIAS_NAME" \
-      --function-version "$version" >/dev/null
-  fi
+  aws lambda update-alias \
+    --region "$REGION" \
+    --function-name "$fn" \
+    --name "$ALIAS_NAME" \
+    --function-version "$version" >/dev/null
 }
 
 delete_old_versions() {
@@ -132,7 +134,7 @@ delete_old_versions() {
     --region "$REGION" \
     --function-name "$fn" \
     --query 'Versions[?Version!=`$LATEST` && Version!=`'"$keep_version"'`].Version' \
-    --output text)
+    --output text 2>/dev/null || echo "")
   for v in $versions; do
     aws lambda delete-function \
       --region "$REGION" \
@@ -140,6 +142,19 @@ delete_old_versions() {
       --qualifier "$v" 2>/dev/null || true
   done
 }
+
+# Beim Abbruch alte Versionen aufraeumen, damit der Code-Storage nicht voll
+# laeuft. Aliase nicht beruehren, die zeigen auf eine gueltige Version.
+cleanup() {
+  if [[ "$DRY_RUN" == "1" ]]; then return; fi
+  for memory in "${MEMORIES[@]}"; do
+    local fn current
+    fn=$(fn_name "$memory")
+    current=$(aws lambda get-alias --region "$REGION" --function-name "$fn" --name "$ALIAS_NAME" --query FunctionVersion --output text 2>/dev/null || echo "")
+    [[ -n "$current" ]] && delete_old_versions "$fn" "$current"
+  done
+}
+trap cleanup EXIT
 
 invoke_once() {
   local target=$1 payload_file=$2 mode=$3
@@ -173,7 +188,6 @@ parse_and_emit() {
   [[ "$report" =~ \ Duration:\ ([0-9.]+)\ ms ]] && dur="${BASH_REMATCH[1]}"
   [[ "$report" =~ Billed\ Duration:\ ([0-9]+)\ ms ]] && billed="${BASH_REMATCH[1]}"
   [[ "$report" =~ Max\ Memory\ Used:\ ([0-9]+)\ MB ]] && max_mem="${BASH_REMATCH[1]}"
-  # Init Duration (klassisch) ODER Restore Duration (SnapStart) -> selbe Spalte
   [[ "$report" =~ Init\ Duration:\ ([0-9.]+)\ ms ]] && init="${BASH_REMATCH[1]}"
   [[ "$report" =~ Restore\ Duration:\ ([0-9.]+)\ ms ]] && init="${BASH_REMATCH[1]}"
 
@@ -210,13 +224,16 @@ for memory in "${MEMORIES[@]}"; do
       python3 "$SCRIPT_DIR/build-payload.py" "$payload" > "$payload_file"
       report=$(invoke_once "$target" "$payload_file" "cold" || true)
       if [[ -n "$report" ]]; then
+        if [[ "$report" != *"Restore Duration:"* && "$DRY_RUN" != "1" ]]; then
+          echo "  cold $i/$ITER: WARN, kein Restore Duration im REPORT" >&2
+        fi
         parse_and_emit "$report" "$memory" "$payload" "cold" >> "$OUTPUT_FILE"
       else
         echo "  cold $i/$ITER: keine REPORT-Zeile" >&2
       fi
 
-      # Alte Versionen aufraeumen, sonst Code-Storage-Limits
-      if (( i % 5 == 0 )); then
+      # Periodisch alte Versionen loeschen, sonst laeuft Code-Storage voll
+      if (( i % CLEANUP_INTERVAL == 0 )); then
         delete_old_versions "$fn" "$version"
       fi
     done
@@ -237,12 +254,6 @@ for memory in "${MEMORIES[@]}"; do
     done
 
     rm -f "$payload_file"
-
-    # Final cleanup pro Function: alle bis auf aktuelle Version loeschen
-    if [[ "$DRY_RUN" != "1" ]]; then
-      current=$(aws lambda get-alias --region "$REGION" --function-name "$fn" --name "$ALIAS_NAME" --query FunctionVersion --output text 2>/dev/null || echo "")
-      [[ -n "$current" ]] && delete_old_versions "$fn" "$current"
-    fi
   done
 done
 

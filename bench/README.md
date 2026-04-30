@@ -7,7 +7,7 @@ Drei Komponenten:
 | `config.json` | beschreibt 54 Konfigurationen (Runtime x Memory x Payload x Mode) |
 | `build-payload.py` | erzeugt JSON-Payload mit frischer UUID, Ziel-Bytelaenge |
 | `run.sh` | iteriert ueber alle Konfigurationen, forciert Cold Starts via Env-Var-Bump, schreibt CSV |
-| `run-snapstart.sh` | Variante fuer SnapStart-Functions, forciert Cold via publish-version + alias-update |
+| `run-snapstart.sh` | Variante fuer SnapStart-Functions, publishet pro Iteration eine neue Version und legt den Alias um |
 | `analyze.py` | liest CSV, berechnet p50/p95/p99 pro Konfig, schreibt summary.csv und report.md |
 
 ## Voraussetzungen
@@ -39,22 +39,24 @@ Ergebnis: `results/summary.csv` plus `results/report.md` mit Pivot-Tabellen.
 ## SnapStart-Lauf (separat)
 
 ```bash
-./run-snapstart.sh                              # 25 Iterationen pro Konfig, ~2.5h
+./run-snapstart.sh                              # 25 Iterationen pro Konfig, ~2.5 h
 # CSVs zusammenfuegen (gleiches Schema, neue Zeilen mit runtime=java-jvm-snapstart)
-cat ../results/raw/measurements-*.csv \
-  | awk 'NR==1 || !/^timestamp,/' \
+awk 'FNR==1 && NR!=1 {next} {print}' \
+  ../results/raw/measurements-*.csv \
   > ../results/raw/combined.csv
 python3 analyze.py ../results/raw/combined.csv ../results/
 ```
 
-Cold-Start-Forcierung laeuft anders als bei `run.sh`: pro Iteration wird eine neue Version published, der Snapshot abgewartet (~10-30 s) und der Alias `live` umgelegt. Ohne diesen Workaround wuerde `update-function-configuration` nur `$LATEST` aendern, der aliasierte Snapshot bliebe unberuehrt.
+Pro Iteration wird eine neue Lambda-Version published (mit eigenem Snapshot), auf Snapshot-Bereitschaft gewartet (`State=Active` plus `SnapStart.OptimizationStatus=On`) und der Alias `live` umgelegt. Der erste Invoke gegen den Alias triggert dann zwangslaeufig einen Restore aus dem neuen Snapshot.
 
-Default 25 Iterationen, ueber `SNAPSTART_ITER=N` ueberschreibbar. Default Snapshot-Timeout 90 s, ueber `SNAPSHOT_TIMEOUT_SEC=N`.
+Warum nicht das eleganter klingende "ein Snapshot, viele Restores via Concurrency-Eviction": AWS bietet keinen schnellen Mechanismus um warme Instanzen einer aliasierten Version zu evicten. `put-function-concurrency=0` wirkt erst nach Minuten, `update-function-configuration` aendert nur `$LATEST`. Methodisch ist das egal: Restore Duration aus einem frisch erstellten Snapshot ist Lambda-intern identisch zu Restore aus einem laenger lebenden Snapshot, Snapshots altern nicht.
+
+Default 25 Iterationen, ueber `SNAPSTART_ITER=N` ueberschreibbar. Snapshot-Timeout 90 s (`SNAPSHOT_TIMEOUT_SEC`). Alle 5 Iterationen werden alte Versionen geloescht (`CLEANUP_INTERVAL`), bei Abbruch raeumt der EXIT-Trap die Function-Liste auf.
 
 ## Methodik
 
 - **Cold Start forcieren (Standard):** `aws lambda update-function-configuration` setzt eine Nonce-Env-Var. Lambda recycelt dadurch alle Container. `aws lambda wait function-updated` blockt bis die neue Konfig aktiv ist.
-- **Cold Start forcieren (SnapStart):** Env-Var-Bump auf `$LATEST` plus `publish-version` plus `update-alias`. Pro Iteration ~30-45 s wegen Snapshot-Erstellung.
+- **Restore forcieren (SnapStart):** Description-Bump auf `$LATEST`, `publish-version` (erzeugt neuen Snapshot), Polling auf `State=Active` und `OptimizationStatus=On`, dann `update-alias`. Naechster Invoke ist ein garantierter Restore. Pro Iteration ~30-45 s.
 - **Warm Phase:** zwei Warmup-Invocations (nicht gemessen), dann 50 (oder 25 fuer SnapStart) echte Messungen ohne Konfig-Aenderung.
 - **Frische UUID pro Invoke:** verhindert DDB-Caching-Effekte.
 - **Mess-Datenquelle:** `aws lambda invoke --log-type Tail` liefert die REPORT-Zeile direkt im Response-Header. Kein Warten auf CloudWatch-Logs-Ingestion. Bash-Regex parst `Init Duration` (Standard) **oder** `Restore Duration` (SnapStart) in dieselbe `init_duration_ms`-Spalte. So bleibt `analyze.py` runtime-agnostisch.
@@ -67,9 +69,9 @@ Default 25 Iterationen, ueber `SNAPSTART_ITER=N` ueberschreibbar. Default Snapsh
 - Summe: 27 Konfigs x ~9 min = **~4 Stunden**
 
 **run-snapstart.sh** (1 runtime x 3 memory x 3 payload, 25 cold + 25 warm):
-- Cold: ~45 s pro Iteration (publish + snapshot + alias + invoke) -> ~19 min
+- Cold: ~30-45 s pro Iteration (publish + snapshot-wait + alias + invoke) -> ~15-19 min
 - Warm: ~0.5 s pro Iteration -> ~15 s
-- Summe: 9 Konfigs x ~19 min = **~2.5 Stunden**
+- Summe: 9 Konfigs x ~17 min = **~2.5 Stunden**
 
 **Lambda-Kosten gesamt (in eu-central-2):**
 - run.sh: 2700 Invocations + ~1350 update-function-configuration (gratis)
