@@ -38,9 +38,18 @@ Ergebnis: `results/summary.csv` plus `results/report.md` mit Pivot-Tabellen.
 
 ## SnapStart-Lauf (separat)
 
+Zwei Varianten, je per `SNAPSTART_VARIANT` waehlbar:
+
 ```bash
-./run-snapstart.sh                              # 25 Iterationen pro Konfig, ~2.5 h
-# CSVs zusammenfuegen (gleiches Schema, neue Zeilen mit runtime=java-jvm-snapstart)
+SNAPSTART_VARIANT=default ./run-snapstart.sh    # ohne CRaC-Priming, runtime-Key java-jvm-snapstart
+SNAPSTART_VARIANT=primed  ./run-snapstart.sh    # mit CRaC-Priming,  runtime-Key java-jvm-snapstart-primed
+```
+
+Default ist `default`. Pro Variante 25 Iter x 9 Konfigs, ~2.5 h. Output-CSVs landen unter `results/raw/measurements-snapstart-{variant}-<ts>.csv`.
+
+CSVs zusammenfuegen und analysieren:
+
+```bash
 awk 'FNR==1 && NR!=1 {next} {print}' \
   ../results/raw/measurements-*.csv \
   > ../results/raw/combined.csv

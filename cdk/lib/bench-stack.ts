@@ -126,44 +126,55 @@ export class BenchStack extends Stack {
       }
     }
 
-    // SnapStart-Variante des Quarkus JVM Handlers.
+    // SnapStart-Varianten des Quarkus JVM Handlers.
     // Gleiche Code-Basis wie bench-java-jvm, aber mit SnapStart aktiviert
     // und einem Alias "live" auf der ersten publishten Version.
-    // Der Test-Runner (run-snapstart.sh) publishet bei jedem Cold-Start eine
-    // neue Version und legt den Alias um.
+    //
+    // Zwei Varianten werden deployt:
+    //   - "default":  ohne CRaC-Priming, Out-of-the-Box-SnapStart
+    //   - "primed":   BENCH_PRIME=true, Handler registriert sich bei CRaC und
+    //                 ruft sich selbst einmal vor dem Snapshot auf
     const jvmArtifact = path.join(PROJECT_ROOT, "runtimes", "java", "dist", "jvm", "function.zip");
-    for (const memory of MEMORY_SIZES_MB) {
-      const fnName = `bench-java-jvm-snapstart-${memory}`;
-      const logGroup = new LogGroup(this, `${fnName}-LogGroup`, {
-        logGroupName: `/aws/lambda/${fnName}`,
-        retention: RetentionDays.THREE_DAYS,
-        removalPolicy: RemovalPolicy.DESTROY,
-      });
+    const snapStartVariants: Array<{ key: string; runtimeKey: string; primed: boolean }> = [
+      { key: "snapstart",         runtimeKey: "java-jvm-snapstart",        primed: false },
+      { key: "snapstart-primed",  runtimeKey: "java-jvm-snapstart-primed", primed: true  },
+    ];
 
-      const fn = new LambdaFunction(this, fnName, {
-        functionName: fnName,
-        runtime: Runtime.JAVA_25,
-        handler: "io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest",
-        code: Code.fromAsset(jvmArtifact),
-        architecture: Architecture.ARM_64,
-        memorySize: memory,
-        timeout: Duration.seconds(30),
-        role,
-        environment: {
-          BENCH_TABLE: table.tableName,
-          BENCH_RUNTIME: "java-jvm-snapstart",
-          BENCH_RUN: "init",
-        },
-        logGroup,
-        tracing: Tracing.DISABLED,
-        loggingFormat: LoggingFormat.TEXT,
-        snapStart: SnapStartConf.ON_PUBLISHED_VERSIONS,
-      });
+    for (const variant of snapStartVariants) {
+      for (const memory of MEMORY_SIZES_MB) {
+        const fnName = `bench-java-jvm-${variant.key}-${memory}`;
+        const logGroup = new LogGroup(this, `${fnName}-LogGroup`, {
+          logGroupName: `/aws/lambda/${fnName}`,
+          retention: RetentionDays.THREE_DAYS,
+          removalPolicy: RemovalPolicy.DESTROY,
+        });
 
-      new Alias(this, `${fnName}-alias`, {
-        aliasName: "live",
-        version: fn.currentVersion,
-      });
+        const fn = new LambdaFunction(this, fnName, {
+          functionName: fnName,
+          runtime: Runtime.JAVA_25,
+          handler: "io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest",
+          code: Code.fromAsset(jvmArtifact),
+          architecture: Architecture.ARM_64,
+          memorySize: memory,
+          timeout: Duration.seconds(30),
+          role,
+          environment: {
+            BENCH_TABLE: table.tableName,
+            BENCH_RUNTIME: variant.runtimeKey,
+            BENCH_RUN: "init",
+            BENCH_PRIME: variant.primed ? "true" : "false",
+          },
+          logGroup,
+          tracing: Tracing.DISABLED,
+          loggingFormat: LoggingFormat.TEXT,
+          snapStart: SnapStartConf.ON_PUBLISHED_VERSIONS,
+        });
+
+        new Alias(this, `${fnName}-alias`, {
+          aliasName: "live",
+          version: fn.currentVersion,
+        });
+      }
     }
 
     new CfnOutput(this, "TableName", { value: table.tableName });

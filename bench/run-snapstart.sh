@@ -27,14 +27,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_FILE="${1:-$SCRIPT_DIR/config.json}"
-OUTPUT_FILE="${2:-$PROJECT_ROOT/results/raw/measurements-snapstart-$(date -u +%Y%m%dT%H%M%SZ).csv}"
+OUTPUT_FILE="${2:-$PROJECT_ROOT/results/raw/measurements-snapstart-${SNAPSTART_VARIANT:-default}-$(date -u +%Y%m%dT%H%M%SZ).csv}"
 DRY_RUN="${DRY_RUN:-0}"
 
-RUNTIME_KEY="java-jvm-snapstart"
+SNAPSTART_VARIANT="${SNAPSTART_VARIANT:-default}"   # default | primed
+case "$SNAPSTART_VARIANT" in
+  default)
+    RUNTIME_KEY="java-jvm-snapstart"
+    FN_PATTERN="bench-java-jvm-snapstart-{memory}"
+    ;;
+  primed)
+    RUNTIME_KEY="java-jvm-snapstart-primed"
+    FN_PATTERN="bench-java-jvm-snapstart-primed-{memory}"
+    ;;
+  *)
+    echo "ERROR: SNAPSTART_VARIANT muss 'default' oder 'primed' sein, war '$SNAPSTART_VARIANT'" >&2
+    exit 2
+    ;;
+esac
+
 ALIAS_NAME="live"
 ITER="${SNAPSTART_ITER:-25}"
 WARMUP="${SNAPSTART_WARMUP:-2}"
-FN_PATTERN="bench-java-jvm-snapstart-{memory}"
 SNAPSHOT_TIMEOUT_SEC="${SNAPSHOT_TIMEOUT_SEC:-90}"
 CLEANUP_INTERVAL="${CLEANUP_INTERVAL:-5}"
 

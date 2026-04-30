@@ -4,6 +4,8 @@ import com.amazonaws.services.lambda.runtime.Context;
 import com.amazonaws.services.lambda.runtime.RequestHandler;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Named;
+import org.crac.Core;
+import org.crac.Resource;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
@@ -20,10 +22,12 @@ import java.util.regex.Pattern;
 
 @Named("benchHandler")
 @ApplicationScoped
-public class Handler implements RequestHandler<Map<String, Object>, Map<String, Object>> {
+public class Handler implements RequestHandler<Map<String, Object>, Map<String, Object>>, Resource {
 
     private static final String TABLE = System.getenv().getOrDefault("BENCH_TABLE", "BenchTable");
     private static final String RUNTIME = System.getenv().getOrDefault("BENCH_RUNTIME", "java-jvm");
+    private static final boolean PRIME_ENABLED =
+            Boolean.parseBoolean(System.getenv().getOrDefault("BENCH_PRIME", "false"));
     private static final Pattern UUID_PATTERN =
             Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
@@ -31,6 +35,11 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
 
     public Handler(DynamoDbClient ddb) {
         this.ddb = ddb;
+        if (PRIME_ENABLED) {
+            // Lambda's SnapStart triggert beforeCheckpoint VOR der Snapshot-Erstellung.
+            // Damit landen Class-Loading, JIT-Warmup und DDB-Connection-State im Snapshot.
+            Core.getGlobalContext().register(this);
+        }
     }
 
     @Override
@@ -70,6 +79,29 @@ public class Handler implements RequestHandler<Map<String, Object>, Map<String, 
         response.put("payloadHash", attrs.get("payloadHash").s());
         response.put("runtime", attrs.get("runtime").s());
         return response;
+    }
+
+    @Override
+    public void beforeCheckpoint(org.crac.Context<? extends Resource> ctx) {
+        // Priming-Aufruf mit fixer Dummy-UUID. Triggert:
+        //   - Class-Loading des Handler-Hot-Path
+        //   - JIT-Compilation der haeufig laufenden Methoden
+        //   - DDB-Client-Init (DNS, TLS-Handshake, Connection-Pool)
+        // Faengt alle Exceptions ab, damit ein Priming-Fehler nicht die
+        // Snapshot-Erstellung blockiert.
+        try {
+            handleRequest(Map.of(
+                    "id", "00000000-0000-0000-0000-000000000000",
+                    "payload", "priming"
+            ), null);
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    public void afterRestore(org.crac.Context<? extends Resource> ctx) {
+        // Lambda kuemmert sich um SecureRandom-Reseed automatisch.
+        // Hier kein zusaetzliches Aufraeumen noetig.
     }
 
     private static String sha256Hex(byte[] data) {
