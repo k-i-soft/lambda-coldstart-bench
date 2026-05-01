@@ -1,18 +1,19 @@
 # Lambda Cold Start Benchmark, CDK
 
-Eigenstaendige CDK-App, deployt 9 Lambda-Functions (3 Runtimes x 3 Memory) plus DynamoDB-Tabelle in eu-central-2.
+Eigenstaendige CDK-App, deployt 12 Lambda-Functions plus eine DynamoDB-Tabelle in eu-central-2. Alles arm64.
 
 ## Architektur
 
 | | |
 |---|---|
-| Tabelle | `BenchTable` (PK `id`, On-Demand) |
-| Functions (Standard) | `bench-{runtime}-{memory}` fuer runtime in `[java-jvm, java-native, node]` und memory in `[512, 1024, 1769]` -> 9 Functions |
-| Functions (SnapStart) | `bench-java-jvm-snapstart-{memory}` mit `SnapStartConf.ON_PUBLISHED_VERSIONS` und Alias `live` -> 3 Functions |
+| Tabelle | `BenchTable` (PK `id`, On-Demand, RemovalPolicy DESTROY) |
+| Functions Standard | `bench-{runtime}-{memory}` fuer runtime in `[java-jvm, java-native, node]` und memory in `[512, 1024, 1769]` -> **9 Functions** |
+| Functions SnapStart | `bench-java-jvm-snapstart-{memory}` und `bench-java-jvm-snapstart-primed-{memory}` mit `SnapStartConf.ON_PUBLISHED_VERSIONS` und Alias `live` -> **6 Functions**, BENCH_PRIME=false bzw. true unterscheidet die zwei Varianten |
+| **Total** | **12 Lambda-Functions, 6 Aliase** |
 | Architektur | arm64 (Graviton) |
 | Logs | `/aws/lambda/<fn>`, Retention 3 Tage |
-| **Bewusst NICHT aktiviert** (Standard) | X-Ray, Insights, VPC, Provisioned Concurrency. Begruendung: jede dieser Optionen verfaelscht die Cold-Start-Messung. |
-| **SnapStart** | Nur fuer die 3 SnapStart-Functions. Eigene Methodik im SnapStart-Runner, `Restore Duration` ersetzt `Init Duration` in der REPORT-Zeile. |
+| Bewusst NICHT aktiviert | X-Ray, Insights, VPC, Provisioned Concurrency. Jede dieser Optionen verfaelscht die Cold-Start-Messung. |
+| IAM | Eine geteilte Rolle ueber alle 12 Functions, `dynamodb:PutItem` plus `GetItem` auf `BenchTable`, plus Basic-Lambda-Execution. |
 
 ## Voraussetzungen
 
@@ -34,12 +35,14 @@ npm run synth                   # generiert CloudFormation, prueft TS-Types
 npm run deploy                  # deployt Stack "LambdaColdstartBench"
 ```
 
-Nach erfolgreichem Deploy stehen 9 Functions in eu-central-2 bereit. Dann zurueck zu `bench/`:
+Nach erfolgreichem Deploy stehen 12 Functions in eu-central-2 bereit. Dann zurueck zu `bench/`:
 
 ```bash
 cd ../bench
-./run.sh                        # ca. 4 Stunden, generiert results/raw/measurements-<ts>.csv
-python3 analyze.py              # erzeugt results/summary.csv und results/report.md
+./run.sh                                          # ~4 h, Standard-Runtimes
+SNAPSTART_VARIANT=default ./run-snapstart.sh      # ~2.5 h, SnapStart ohne Priming
+SNAPSTART_VARIANT=primed  ./run-snapstart.sh      # ~2.5 h, SnapStart mit CRaC-Priming
+python3 analyze.py                                # erzeugt results/summary.csv und results/report.md
 ```
 
 ## Selektive Builds
@@ -67,5 +70,10 @@ Default Region ist `eu-central-2`, ueberschreibbar via `CDK_DEFAULT_REGION`. Acc
 
 ## Was nicht im Stack ist
 
-- **API Gateway:** Tests rufen Lambdas direkt via `aws lambda invoke` auf. Kein API Gateway noetig, das wuerde ohnehin nur HTTP-Layer-Latenz dazumischen.
-- **SQS / SNS Trigger:** Async-Trigger haben anderes Init-Profil, wir messen synchrones Invoke.
+- **API Gateway**: Tests rufen Lambdas direkt via `aws lambda invoke` auf. Kein API Gateway noetig, das wuerde nur HTTP-Layer-Latenz dazumischen
+- **SQS / SNS Trigger**: Async-Trigger haben anderes Init-Profil, wir messen synchrones Invoke
+- **VPC Endpoints**: alle Functions reden ueber das normale Internet zum DDB-Service-Endpoint, das matched die haeufigste Praxis-Konfiguration
+
+## Warum keine eigene Production-Construct-Library
+
+Wer in einer existierenden Codebasis schon einen Higher-Level Lambda-Construct hat (mit X-Ray, Insights, Tracing, SnapStart-Defaults und so), sollte ihn fuer diesen Bench **nicht** benutzen. Jede dieser Production-Annehmlichkeiten verfaelscht das Cold-Start-Profil. Dieser Stack nutzt absichtlich `aws-cdk-lib`'s nacktes `Function`-Konstrukt mit jedem mess-relevanten Hook explizit deaktiviert, damit die Messung sauber bleibt.

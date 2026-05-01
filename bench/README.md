@@ -88,6 +88,15 @@ Default 25 Iterationen, ueber `SNAPSTART_ITER=N` ueberschreibbar. Snapshot-Timeo
 - DynamoDB On-Demand: ~7000 schreib- und ~7000 lese-Operationen
 - **Gesamtkosten: deutlich unter 10 CHF**
 
-## Was fehlt noch (Phase 3)
+## Output-Dateien
 
-- CDK-Konstrukt das die 9 Lambda-Functions (3 Runtimes x 3 Memory) plus DynamoDB-Tabelle deployt. Architektur arm64. IAM-Rollen mit `dynamodb:PutItem` und `dynamodb:GetItem` auf `BenchTable`.
+- `results/raw/measurements-<ts>.csv`, eine Zeile pro Invoke, alle REPORT-Felder
+- `results/raw/measurements-snapstart-{default|primed}-<ts>.csv`, fuer SnapStart-Runs separat
+- Nach `analyze.py`: `results/summary.csv` (gruppierte p50/p95/p99) und `results/report.md` (Pivot-Tabellen)
+
+CSV-Schema:
+```
+timestamp,runtime,memory,payload_size,mode,init_duration_ms,duration_ms,billed_duration_ms,max_memory_mb,request_id
+```
+
+`init_duration_ms` ist die `Init Duration` aus dem REPORT-Tail bei Standard-Runtimes oder die `Restore Duration` bei SnapStart. Damit bleibt das Schema runtime-agnostisch.
