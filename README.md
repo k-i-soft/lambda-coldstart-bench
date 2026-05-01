@@ -141,8 +141,7 @@ Detaillierte Methodik im [Workload-Contract](workload/contract.md) und in [`benc
 
 Vollstaendige Analyse mit Methodik, Caveats, Visualisierung und Praxis-Empfehlungen:
 
-- **DE**: https://www.k-i-soft.ch/blog/lambda-cold-start-benchmark
-- **EN**: https://www.k-i-soft.ch/blog/lambda-cold-start-benchmark?lang=en
+**Studienbericht:** https://go.k-i-soft.ch/w8ekxh
 
 ---
 
@@ -154,4 +153,4 @@ Datenfreigabe: die Roh-CSVs in `results/raw/` sind unter derselben Lizenz frei n
 
 ## Author
 
-Istvan Kappelmayer, K-I-Soft GmbH, Schweiz. https://www.k-i-soft.ch
+Istvan Kappelmayer, K-I-Soft, Schweiz. https://www.k-i-soft.ch
