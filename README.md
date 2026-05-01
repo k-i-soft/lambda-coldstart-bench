@@ -9,7 +9,7 @@ Vergleichsstudie Cold-Start-Latenz auf AWS Lambda fuer vier Runtimes:
 
 Identische Workload in allen Runtimes, definiert im [Workload-Contract](workload/contract.md): JSON rein, UUID validieren, SHA-256 berechnen, in DynamoDB schreiben und wieder lesen, JSON raus.
 
-**Studienbericht:** https://go.k-i-soft.ch/w8ekxh
+**Studienbericht:** https://go.k-i-soft.ch/gp2ls1
 
 ---
 
@@ -141,7 +141,7 @@ Detaillierte Methodik im [Workload-Contract](workload/contract.md) und in [`benc
 
 Vollstaendige Analyse mit Methodik, Caveats, Visualisierung und Praxis-Empfehlungen:
 
-**Studienbericht:** https://go.k-i-soft.ch/w8ekxh
+**Studienbericht:** https://go.k-i-soft.ch/gp2ls1
 
 ---
 
