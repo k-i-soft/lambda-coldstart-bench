@@ -1,6 +1,3 @@
 .DS_Store
-/results/raw
-results/summary.csv
-results/report.md
 /runtimes/java/dist
 /runtimes/java/target
